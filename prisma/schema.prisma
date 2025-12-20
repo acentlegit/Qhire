@@ -1,0 +1,665 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  ADMIN
+  RECRUITER
+  HIRING_MANAGER
+}
+
+enum JobStatus {
+  OPEN
+  ON_HOLD
+  CLOSED
+}
+
+enum OfferStatus {
+  DRAFT
+  SENT
+  ACCEPTED
+  DECLINED
+}
+
+enum BulkParseStatus {
+  PROCESSING
+  COMPLETED
+  FAILED
+  CANCELLED
+}
+
+model User {
+  id                   String                @id @default(cuid())
+  email                String                @unique
+  name                 String?
+  role                 Role                  @default(RECRUITER)
+  password             String? // hashed later
+  phone                String?
+  avatarUrl            String?
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+  Jobs                 Job[]                 @relation("UserJobs")
+  Activities           ActivityLog[]
+  ChatHistory          ChatMessage[]
+  CalendarIntegrations CalendarIntegration[]
+  // UAM: MFA fields
+  mfaSecret            String?
+  mfaEnabled           Boolean               @default(false)
+  backupCodes          Json? // Array of backup codes
+  mfaVerifiedAt        DateTime?
+  // UAM: Session management
+  Sessions             Session[]
+  // UAM: Device management
+  Devices              Device[]
+  // UAM: Security
+  lastLoginAt          DateTime?
+  lastLoginIp          String?
+  failedLoginAttempts  Int                   @default(0)
+  lockedUntil          DateTime?
+  // AI Cost Tracking
+  totalAICost          Float                 @default(0)
+  monthlyAICost        Float                 @default(0)
+  AIUsage              AIUsage[]
+  // Gmail Integration
+  GmailIntegration     GmailIntegration?
+  // Notifications
+  Notifications        Notification[]
+  // User Preferences
+  theme                String? // 'light', 'dark', 'system'
+  timezone             String? // IANA timezone (e.g., 'America/New_York')
+
+  @@index([email])
+}
+
+model Job {
+  id              String              @id @default(cuid())
+  title           String
+  description     String
+  status          JobStatus           @default(OPEN)
+  createdBy       User                @relation("UserJobs", fields: [createdById], references: [id])
+  createdById     String
+  // Enhanced fields
+  department      String?
+  location        String?
+  salaryMin       Int?
+  salaryMax       Int?
+  currency        String?             @default("USD")
+  employmentType  String? // FULL_TIME, PART_TIME, CONTRACT, INTERN
+  experienceLevel String? // ENTRY, MID, SENIOR, EXECUTIVE
+  requirements    Json? // Skills, qualifications as JSON
+  benefits        Json? // Benefits array as JSON
+  // AI fields - using JSON for now, can migrate to pgvector later
+  embeddingJson   Json? // Store embeddings as JSON array [0.1, 0.2, ...]
+  // Metadata
+  createdAt       DateTime            @default(now())
+  updatedAt       DateTime            @updatedAt
+  closedAt        DateTime?
+  Applications    Application[]
+  Stages          PipelineStage[]
+  MatchScores     JobCandidateMatch[]
+
+  @@index([status])
+  @@index([createdAt])
+  @@index([createdById])
+  @@index([department])
+  @@index([location])
+}
+
+model Candidate {
+  id                    String              @id @default(cuid())
+  name                  String
+  email                 String              @unique
+  phone                 String?
+  // Resume parsing fields
+  skills                String? // json or comma list (simple for now)
+  skillsParsed          Json? // Structured skills from AI parsing
+  experience            Json? // Parsed experience: [{company, role, duration, description}]
+  education             Json? // Parsed education: [{institution, degree, year}]
+  resumeUrl             String?
+  resumeText            String? // Extracted text from resume
+  resumeParsedAt        DateTime?
+  resumeParseConfidence Float? // 0-1 confidence score
+  // AI fields - using JSON for now, can migrate to pgvector later
+  embeddingJson         Json? // Store embeddings as JSON array [0.1, 0.2, ...]
+  // Metadata
+  linkedinUrl           String?
+  githubUrl             String?
+  portfolioUrl          String?
+  currentCompany        String?
+  currentRole           String?
+  yearsExperience       Int?
+  location              String?
+  source                String? // LINKEDIN, GMAIL, UPLOAD, MANUAL
+  status                String? // NEW, CONTACTED, QUALIFIED, etc.
+  createdById           String?
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+  Applications          Application[]
+  Notes                 Note[]
+  MatchScores           JobCandidateMatch[]
+  BulkParseResults      BulkParseResult[]
+  AssessmentCalls       AssessmentCall[]
+
+  @@index([name])
+  @@index([email])
+  @@index([phone])
+  @@index([currentCompany])
+  @@index([source])
+}
+
+model Application {
+  id              String           @id @default(cuid())
+  job             Job              @relation(fields: [jobId], references: [id])
+  jobId           String
+  candidate       Candidate        @relation(fields: [candidateId], references: [id])
+  candidateId     String
+  stage           String // Applied, Screen, Interview, Offer, Hired, Rejected
+  // Enhanced fields
+  source          String? // Where candidate applied from (LinkedIn, website, referral)
+  coverLetter     String?
+  matchScore      Float? // AI match score 0-100
+  // Metadata
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+  movedAt         DateTime? // Last stage change
+  Offers          Offer[]
+  Events          Event[]
+  Activities      ActivityLog[]
+  AssessmentCalls AssessmentCall[]
+
+  @@index([jobId, stage])
+  @@index([candidateId])
+  @@index([stage])
+  @@index([createdAt])
+  @@index([matchScore])
+}
+
+model PipelineStage {
+  id    String @id @default(cuid())
+  job   Job    @relation(fields: [jobId], references: [id])
+  jobId String
+  name  String
+  order Int
+}
+
+model Offer {
+  id                String      @id @default(cuid())
+  application       Application @relation(fields: [applicationId], references: [id])
+  applicationId     String
+  status            OfferStatus @default(DRAFT)
+  // Offer details
+  templateId        String? // Reference to OfferTemplate
+  salary            Int?
+  currency          String?     @default("USD")
+  startDate         DateTime?
+  benefits          Json? // Benefits as JSON
+  terms             String? // Additional terms
+  // Files
+  pdfUrl            String?
+  signedPdfUrl      String? // After e-signature
+  // E-signature
+  signedAt          DateTime?
+  signedBy          String? // Candidate email/ID
+  signatures        Signature[]
+  // Versioning
+  version           Int         @default(1)
+  previousVersionId String? // For version history
+  // Metadata
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  sentAt            DateTime?
+  expiresAt         DateTime?
+
+  @@index([applicationId])
+  @@index([status])
+  @@index([sentAt])
+}
+
+model Event {
+  id               String      @id @default(cuid())
+  application      Application @relation(fields: [applicationId], references: [id])
+  applicationId    String
+  type             String // INTERVIEW, CALL, MEETING, etc.
+  title            String
+  description      String?
+  // Scheduling
+  start            DateTime
+  end              DateTime
+  timezone         String?     @default("UTC")
+  location         String? // Physical or virtual link
+  // Participants
+  organizerId      String? // User ID
+  attendees        Json? // [{email, name, role}]
+  // Calendar integration
+  googleEventId    String?
+  microsoftEventId String?
+  // AI Assessment calls
+  assessmentCalls  AssessmentCall[]
+  // Metadata
+  createdAt        DateTime    @default(now())
+  updatedAt        DateTime    @updatedAt
+  reminderSent     Boolean     @default(false)
+
+  @@index([applicationId])
+  @@index([start])
+  @@index([type])
+}
+
+model Note {
+  id          String    @id @default(cuid())
+  candidate   Candidate @relation(fields: [candidateId], references: [id])
+  candidateId String
+  // Enhanced fields
+  authorId    String? // User ID who created the note
+  content     String
+  isPrivate   Boolean   @default(false)
+  tags        Json? // Tags array
+  // Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([candidateId])
+  @@index([createdAt])
+}
+
+// Activity Log for audit trail (Enhanced with UAM)
+model ActivityLog {
+  id            String       @id @default(cuid())
+  user          User?        @relation(fields: [userId], references: [id])
+  userId        String?
+  application   Application? @relation(fields: [applicationId], references: [id])
+  applicationId String?
+  action        String // CREATED, UPDATED, MOVED, DELETED, LOGIN, LOGOUT, etc.
+  entityType    String // JOB, CANDIDATE, APPLICATION, OFFER, USER, etc.
+  entityId      String
+  changes       Json? // Before/after values
+  metadata      Json? // Additional context (IP, userAgent, riskScore, etc.)
+  // UAM: Enhanced audit fields
+  ipAddress     String?
+  userAgent     String?
+  riskScore     Int? // Risk assessment score (0-100)
+  severity      String? // LOW, MEDIUM, HIGH, CRITICAL
+  createdAt     DateTime     @default(now())
+
+  @@index([userId])
+  @@index([applicationId])
+  @@index([entityType, entityId])
+  @@index([createdAt])
+  @@index([severity])
+  @@index([action])
+}
+
+// UAM: Session Management
+model Session {
+  id             String   @id @default(cuid())
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId         String
+  token          String   @unique // Session token
+  refreshToken   String?  @unique // Refresh token
+  deviceId       String? // Link to Device
+  device         Device?  @relation(fields: [deviceId], references: [id])
+  ipAddress      String?
+  userAgent      String?
+  location       String? // City, Country
+  isActive       Boolean  @default(true)
+  lastActivityAt DateTime @default(now())
+  expiresAt      DateTime
+  createdAt      DateTime @default(now())
+
+  @@index([userId])
+  @@index([token])
+  @@index([isActive])
+  @@index([expiresAt])
+}
+
+// UAM: Device Management
+model Device {
+  id          String    @id @default(cuid())
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  name        String? // User-friendly device name
+  type        String? // desktop, mobile, tablet
+  os          String? // Operating system
+  browser     String? // Browser name
+  fingerprint String? // Device fingerprint hash
+  isTrusted   Boolean   @default(false)
+  lastSeenAt  DateTime  @default(now())
+  firstSeenAt DateTime  @default(now())
+  Sessions    Session[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([fingerprint])
+  @@index([isTrusted])
+}
+
+// Job-Candidate Match Scores (AI-powered)
+model JobCandidateMatch {
+  id              String    @id @default(cuid())
+  job             Job       @relation(fields: [jobId], references: [id])
+  jobId           String
+  candidate       Candidate @relation(fields: [candidateId], references: [id])
+  candidateId     String
+  // Match scores
+  overallScore    Float // 0-100
+  skillsScore     Float?
+  experienceScore Float?
+  educationScore  Float?
+  // AI analysis
+  matchReasons    Json? // Why they match: ["Strong React experience", "5+ years in fintech"]
+  gaps            Json? // Missing requirements: ["No TypeScript experience"]
+  // Metadata
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  @@unique([jobId, candidateId])
+  @@index([jobId])
+  @@index([candidateId])
+  @@index([overallScore])
+}
+
+// Offer Templates
+model OfferTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  description String?
+  // Template content
+  content     String // HTML/Markdown template with variables
+  variables   Json? // Available variables: {salary, startDate, benefits, etc.}
+  // Metadata
+  isDefault   Boolean  @default(false)
+  createdBy   String? // User ID
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([isDefault])
+}
+
+// AI Chat Messages (Assistant)
+model ChatMessage {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id])
+  userId      String
+  // Message content
+  role        String // user, assistant, system
+  content     String
+  // Context (what the user is working on)
+  contextType String? // JOB, CANDIDATE, APPLICATION, GENERAL
+  contextId   String?
+  // AI metadata
+  model       String? // Which LLM was used
+  tokens      Int?
+  // Metadata
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([contextType, contextId])
+  @@index([createdAt])
+}
+
+// File Attachments
+model Attachment {
+  id         String   @id @default(cuid())
+  // What it's attached to
+  entityType String // JOB, CANDIDATE, APPLICATION, OFFER, NOTE
+  entityId   String? // Can be null for new/pending entities
+  // File info
+  filename   String
+  mimeType   String
+  size       Int // bytes
+  url        String // S3 URL or signed URL
+  // Metadata
+  uploadedBy String? // User ID
+  createdAt  DateTime @default(now())
+
+  @@index([entityType])
+  @@index([entityId])
+  @@index([createdAt])
+}
+
+// Bulk Resume Parse Jobs
+model BulkParseJob {
+  id             String            @id @default(cuid())
+  jobId          String? // Optional: for matching with specific job
+  createdBy      String // User ID
+  // Status tracking
+  status         BulkParseStatus   @default(PROCESSING)
+  totalFiles     Int
+  processedFiles Int               @default(0)
+  errorFiles     Int               @default(0)
+  // Options
+  options        Json? // {autoCreateCandidates, autoMatch, topMatches, etc.}
+  // Results
+  results        BulkParseResult[]
+  // Metadata
+  createdAt      DateTime          @default(now())
+  updatedAt      DateTime          @updatedAt
+  completedAt    DateTime?
+
+  @@index([createdBy])
+  @@index([status])
+  @@index([createdAt])
+}
+
+// Individual Parse Results
+model BulkParseResult {
+  id          String       @id @default(cuid())
+  batchJob    BulkParseJob @relation(fields: [batchJobId], references: [id])
+  batchJobId  String
+  candidate   Candidate?   @relation(fields: [candidateId], references: [id])
+  candidateId String?
+  // File info
+  filename    String
+  fileUrl     String?
+  // Parse results
+  status      String // SUCCESS, ERROR
+  parsedData  Json? // Full parsed resume data
+  email       String? // Extracted email
+  matchScore  Float? // Match score if jobId provided
+  error       String? // Error message if failed
+  // Metadata
+  createdAt   DateTime     @default(now())
+
+  @@index([batchJobId])
+  @@index([candidateId])
+  @@index([status])
+  @@index([email])
+}
+
+// Scheduling Links - For candidate self-scheduling
+model SchedulingLink {
+  id             String   @id @default(cuid())
+  token          String   @unique // Unique token for public URL
+  // What it's for
+  applicationId  String?
+  jobId          String?
+  candidateId    String?
+  createdById    String // User who created the link
+  // Scheduling options
+  duration       Int      @default(30) // Minutes
+  timezone       String   @default("UTC")
+  availableSlots Json? // Available time slots
+  // Status
+  expiresAt      DateTime
+  isActive       Boolean  @default(true)
+  // Metadata
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([token])
+  @@index([applicationId])
+  @@index([jobId])
+  @@index([candidateId])
+  @@index([expiresAt])
+}
+
+// Calendar Integration - OAuth tokens for Google/Microsoft Calendar
+model CalendarIntegration {
+  id             String    @id @default(cuid())
+  user           User      @relation(fields: [userId], references: [id])
+  userId         String
+  // Provider type
+  provider       String // GOOGLE, MICROSOFT
+  // OAuth tokens (encrypted in production)
+  accessToken    String
+  refreshToken   String?
+  tokenExpiry    DateTime?
+  // Provider-specific IDs
+  providerUserId String? // Google/Microsoft user ID
+  calendarId     String? // Primary calendar ID
+  // Status
+  isActive       Boolean   @default(true)
+  // Metadata
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@unique([userId, provider])
+  @@index([userId])
+  @@index([provider])
+}
+
+// AI Usage Tracking - Track OpenAI API costs
+model AIUsage {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  // Usage details
+  service     String   // 'chat', 'resume_parse', 'interview', 'matching'
+  tokens      Int      // Total tokens used (input + output)
+  inputTokens Int?     // Input tokens
+  outputTokens Int?    // Output tokens
+  // Cost tracking
+  cost        Float    // Calculated cost in USD
+  model       String?  // Model used (e.g., 'gpt-4o-mini')
+  // Metadata
+  metadata    Json?    // Additional context (jobId, candidateId, etc.)
+  createdAt   DateTime @default(now())
+
+  @@index([userId])
+  @@index([service])
+  @@index([createdAt])
+  @@index([userId, createdAt])
+}
+
+// RBAC Policy Versioning - Track permission changes over time
+model RBACPolicyVersion {
+  id          String   @id @default(cuid())
+  role        String   // Role name (ADMIN, RECRUITER, etc.)
+  permissions Json     // Stored permissions as JSON
+  version     Int      // Version number
+  createdBy   String?  // User ID who made the change
+  createdAt   DateTime @default(now())
+
+  @@unique([role, version])
+  @@index([role])
+  @@index([createdAt])
+}
+
+// Gmail Integration - OAuth tokens for Gmail sourcing
+model GmailIntegration {
+  id           String    @id @default(cuid())
+  user         User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId       String    @unique
+  // OAuth tokens
+  accessToken  String
+  refreshToken String?
+  tokenExpiry  DateTime?
+  // Gmail info
+  email        String?   // Connected Gmail address
+  // Status
+  isActive     Boolean   @default(true)
+  // Metadata
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  @@index([userId])
+}
+
+// E-Signature - Track document signatures
+model Signature {
+  id          String    @id @default(cuid())
+  offer       Offer     @relation(fields: [offerId], references: [id], onDelete: Cascade)
+  offerId     String
+  // Signature details
+  signerName  String
+  signerEmail String
+  signedAt    DateTime?
+  // Status
+  status      String    @default("PENDING") // PENDING, SIGNED, DECLINED, EXPIRED
+  // Signature data
+  signatureUrl String?  // URL to signature image or document
+  ipAddress   String?   // IP address of signer
+  // Verification
+  token       String    @unique @default(cuid()) // Unique signing token
+  expiresAt   DateTime
+  // Metadata
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([offerId])
+  @@index([token])
+  @@index([status])
+}
+
+// Assessment Call - AI voice assessment records
+model AssessmentCall {
+  id            String    @id @default(cuid())
+  event         Event?    @relation(fields: [eventId], references: [id])
+  eventId       String?
+  application   Application? @relation(fields: [applicationId], references: [id])
+  applicationId String?
+  candidate     Candidate @relation(fields: [candidateId], references: [id])
+  candidateId   String
+  // Call details
+  phoneNumber   String?
+  status        String    @default("SCHEDULED") // SCHEDULED, IN_PROGRESS, COMPLETED, FAILED, CANCELLED
+  scheduledAt   DateTime?
+  startedAt     DateTime?
+  endedAt       DateTime?
+  duration      Int?      // Duration in seconds
+  // Recording
+  recordingUrl  String?
+  transcription String?   @db.Text
+  // AI Analysis
+  aiAnalysis    Json?     // AI-generated analysis of the call
+  score         Float?    // Overall score (0-100)
+  // Questions and answers
+  questions     Json?     // Array of {question, answer, score, feedback}
+  // Provider info
+  provider      String?   // VAPI, TWILIO, etc.
+  providerCallId String?  // External call ID
+  // Metadata
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  @@index([candidateId])
+  @@index([eventId])
+  @@index([applicationId])
+  @@index([status])
+}
+
+// Notification - Real-time notifications for users
+model Notification {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  // Notification details
+  type      String   // application_received, interview_scheduled, offer_signed, etc.
+  title     String
+  message   String
+  data      Json?    // Additional context data (actionUrl, etc.)
+  // Status
+  read      Boolean  @default(false)
+  // Metadata
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@index([userId, read])
+  @@index([createdAt])
+}
